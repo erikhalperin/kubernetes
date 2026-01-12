@@ -535,7 +535,6 @@ func (c *cacheWatcher) appendWaitInitEventTemporary(event *watchCacheEvent) bool
 func (c *cacheWatcher) makeUpInitEvent(ctx context.Context) {
 	c.initEventMutex.Lock()
 	defer c.initEventMutex.Unlock()
-	c.initEventDone = true
 	// TODO other timer
 	makeUpTimer := time.NewTimer(time.Millisecond * 500)
 	defer func() {
@@ -543,6 +542,7 @@ func (c *cacheWatcher) makeUpInitEvent(ctx context.Context) {
 			<-makeUpTimer.C
 		}
 		c.waitInitEventTemporary = nil
+		c.initEventDone = true
 	}()
 	for _, event := range c.waitInitEventTemporary {
 		select {
