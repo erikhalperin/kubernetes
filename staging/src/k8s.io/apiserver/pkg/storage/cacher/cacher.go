@@ -617,6 +617,13 @@ func (c *Cacher) Watch(ctx context.Context, key string, opts storage.ListOptions
 
 	c.setInitialEventsEndBookmarkIfRequested(cacheInterval, opts, c.watchCache.resourceVersion)
 
+	if isListWatchRequest(opts) {
+		initEventCount := cacheInterval.endIndex - cacheInterval.startIndex
+		klog.V(1).Infof("initEvent count: %d", initEventCount)
+		bufferCap := min(1000000, initEventCount*10)
+		watcher.waitInitEventTemporary = make([]*watchCacheEvent, 0, bufferCap)
+	}
+
 	addedWatcher := false
 	func() {
 		c.Lock()
