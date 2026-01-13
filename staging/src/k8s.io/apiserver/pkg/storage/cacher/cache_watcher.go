@@ -544,7 +544,7 @@ func (c *cacheWatcher) makeUpInitEvent(ctx context.Context) {
 		c.waitInitEventTemporary = nil
 		c.initEventDone = true
 	}()
-	klog.V(1).Infof("Making up %v init events", len(c.waitInitEventTemporary))
+	klog.V(1).Infof("Making up %d initEvents of %s (%s)", len(c.waitInitEventTemporary), c.groupResource, c.identifier)
 	for _, event := range c.waitInitEventTemporary {
 		select {
 		case <-ctx.Done():
