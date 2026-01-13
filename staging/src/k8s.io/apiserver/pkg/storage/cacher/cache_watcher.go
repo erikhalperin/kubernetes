@@ -567,7 +567,7 @@ func (c *cacheWatcher) process(ctx context.Context, resourceVersion uint64) {
 	utilflowcontrol.WatchInitialized(ctx)
 
 	// set init event done and make up temporary event
-	if !c.initEventDone {
+	if len(c.waitInitEventTemporary) > 0 {
 		go c.makeUpInitEvent(ctx)
 	}
 
