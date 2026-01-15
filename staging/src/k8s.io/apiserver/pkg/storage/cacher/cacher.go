@@ -621,6 +621,7 @@ func (c *Cacher) Watch(ctx context.Context, key string, opts storage.ListOptions
 		initEventCount := cacheInterval.buffer.endIndex
 		klog.V(1).Infof("initEvent count: %d", initEventCount)
 		bufferCap := min(1000000, initEventCount*10)
+		// The slice is of pointers, each pointer is 8 bytes, so the max size of the slice itself is 8MB
 		watcher.waitInitEventTemporary = make([]*watchCacheEvent, 0, bufferCap)
 	}
 
@@ -995,10 +996,12 @@ func (c *Cacher) dispatchEvent(event *watchCacheEvent) {
 			}
 		}
 
-		// if init event is done,move to blockedWatchers
+		// if init events are finished, try nonblockingAdd again
 		for _, watcher := range c.initBlockedWatchers {
 			if !watcher.appendWaitInitEventTemporary(event) {
-				c.blockedWatchers = append(c.blockedWatchers, watcher)
+				if !watcher.nonblockingAdd(event) {
+					c.blockedWatchers = append(c.blockedWatchers, watcher)
+				}
 			}
 		}
 

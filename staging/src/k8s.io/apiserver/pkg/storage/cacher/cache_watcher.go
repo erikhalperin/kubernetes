@@ -532,26 +532,39 @@ func (c *cacheWatcher) appendWaitInitEventTemporary(event *watchCacheEvent) bool
 	return true
 }
 
-func (c *cacheWatcher) makeUpInitEvent(ctx context.Context) {
-	c.initEventMutex.Lock()
-	defer c.initEventMutex.Unlock()
-	// TODO other timer
-	makeUpTimer := time.NewTimer(time.Millisecond * 500)
-	defer func() {
-		if !makeUpTimer.Stop() {
-			<-makeUpTimer.C
-		}
+func (c *cacheWatcher) makeUpInitEvents(ctx context.Context) {
+	for {
+		// With the lock, copy waitInitEventTemporary to a temporary slice. Then release the lock
+		// and drain from the temporary slice without holding the lock, do dispatchEvents can
+		// continue adding to waitInitEventTemporary. This goes on in a loop because events may be
+		// getting added to waitInitEventTemporary while it's getting drained
+		c.initEventMutex.Lock()
+		eventsToProcess := c.waitInitEventTemporary
 		c.waitInitEventTemporary = nil
-		c.initEventDone = true
-	}()
-	klog.V(1).Infof("Making up %d initEvents of %s (%s)", len(c.waitInitEventTemporary), c.groupResource, c.identifier)
-	for _, event := range c.waitInitEventTemporary {
-		select {
-		case <-ctx.Done():
+		if len(eventsToProcess) == 0 {
+			c.initEventDone = true
+			c.initEventMutex.Unlock()
 			return
-		default:
-			if !c.add(event, makeUpTimer) {
+		}
+		c.initEventMutex.Unlock()
+
+		klog.V(1).Infof("Making up %d initEvents of %s (%s)", len(eventsToProcess), c.groupResource, c.identifier)
+		// todo timer
+		makeUpTimer := time.NewTimer(time.Millisecond * 500)
+		defer func() {
+			if !makeUpTimer.Stop() {
+				<-makeUpTimer.C
+			}
+		}()
+
+		for _, event := range eventsToProcess {
+			select {
+			case <-ctx.Done():
 				return
+			default:
+				if !c.add(event, makeUpTimer) {
+					return
+				}
 			}
 		}
 	}
@@ -566,10 +579,7 @@ func (c *cacheWatcher) process(ctx context.Context, resourceVersion uint64) {
 	//   process, but we're leaving this to the tuning phase.
 	utilflowcontrol.WatchInitialized(ctx)
 
-	// set init event done and make up temporary event
-	if len(c.waitInitEventTemporary) > 0 {
-		go c.makeUpInitEvent(ctx)
-	}
+	go c.makeUpInitEvents(ctx)
 
 	for {
 		select {
