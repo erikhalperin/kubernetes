@@ -90,6 +90,8 @@ type cacheWatcher struct {
 	initEventMutex         sync.Mutex
 	initEventDone          bool
 	waitInitEventTemporary []*watchCacheEvent
+	initEventTimeBudget    timeBudget
+	initEventTimer         *time.Timer
 }
 
 func newCacheWatcher(
@@ -102,7 +104,7 @@ func newCacheWatcher(
 	groupResource schema.GroupResource,
 	identifier string,
 ) *cacheWatcher {
-	return &cacheWatcher{
+	cw := &cacheWatcher{
 		input:               make(chan *watchCacheEvent, chanSize),
 		result:              make(chan watch.Event, chanSize),
 		done:                make(chan struct{}),
@@ -114,7 +116,16 @@ func newCacheWatcher(
 		allowWatchBookmarks: allowWatchBookmarks,
 		groupResource:       groupResource,
 		identifier:          identifier,
+		initEventTimeBudget: newTimeBudget(),
+		initEventTimer:      time.NewTimer(time.Duration(0)),
 	}
+	// Ensure that timer is stopped.
+	if !cw.initEventTimer.Stop() {
+		// Consume triggered (but not yet received) timer event
+		// so that future reuse does not get a spurious timeout.
+		<-cw.initEventTimer.C
+	}
+	return cw
 }
 
 // Implements watch.Interface.
@@ -535,7 +546,7 @@ func (c *cacheWatcher) appendWaitInitEventTemporary(event *watchCacheEvent) bool
 func (c *cacheWatcher) makeUpInitEvents(ctx context.Context) {
 	for {
 		// With the lock, copy waitInitEventTemporary to a temporary slice. Then release the lock
-		// and drain from the temporary slice without holding the lock, do dispatchEvents can
+		// and drain from the temporary slice without holding the lock, so dispatchEvents can
 		// continue adding to waitInitEventTemporary. This goes on in a loop because events may be
 		// getting added to waitInitEventTemporary while it's getting drained
 		c.initEventMutex.Lock()
@@ -549,23 +560,28 @@ func (c *cacheWatcher) makeUpInitEvents(ctx context.Context) {
 		c.initEventMutex.Unlock()
 
 		klog.V(1).Infof("Making up %d initEvents of %s (%s)", len(eventsToProcess), c.groupResource, c.identifier)
-		// todo timer
-		makeUpTimer := time.NewTimer(time.Millisecond * 500)
-		defer func() {
-			if !makeUpTimer.Stop() {
-				<-makeUpTimer.C
-			}
-		}()
 
 		for _, event := range eventsToProcess {
 			select {
 			case <-ctx.Done():
 				return
 			default:
-				if !c.add(event, makeUpTimer) {
-					return
-				}
 			}
+
+			startTime := time.Now()
+			timeout := c.initEventTimeBudget.takeAvailable()
+			c.initEventTimer.Reset(timeout)
+
+			if !c.add(event, c.initEventTimer) {
+				return
+			}
+
+			// Stop the timer if it hasn't fired
+			if !c.initEventTimer.Stop() {
+				// Drain the channel if timer already fired
+				<-c.initEventTimer.C
+			}
+			c.initEventTimeBudget.returnUnused(timeout - time.Since(startTime))
 		}
 	}
 }
