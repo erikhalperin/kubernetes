@@ -178,6 +178,35 @@ func (c *cacheWatcher) nonblockingAdd(event *watchCacheEvent) bool {
 	}
 }
 
+// terminateWatcher terminates the watcher so as to not block on it indefinitely.
+// This means that we couldn't send an event to the watcher.
+func (c *cacheWatcher) terminateWatcher() {
+	metrics.TerminatedWatchersCounter.WithLabelValues(c.groupResource.String()).Inc()
+
+	// we are graceful = false, when:
+	//
+	// (a) The bookmarkAfterResourceVersionReceived hasn't been received,
+	//     we can safely terminate the watcher. Because the client is waiting
+	//     for this specific bookmark, and we even haven't received one.
+	// (b) We have seen the bookmarkAfterResourceVersion, and it was sent already to the client.
+	//     We can simply terminate the watcher.
+
+	// we are graceful = true, when:
+	//
+	// (a) We have seen a bookmark, but it hasn't been sent to the client yet.
+	//     That means we should drain the input buffer which contains
+	//     the bookmarkAfterResourceVersion we want. We do that to make progress
+	//     as clients can re-establish a new watch with the given RV and receive
+	//     further notifications.
+	graceful := func() bool {
+		c.stateMutex.Lock()
+		defer c.stateMutex.Unlock()
+		return c.state == cacheWatcherBookmarkReceived
+	}()
+	klog.V(1).Infof("Forcing %v watcher close due to unresponsiveness: %v. len(c.input) = %v, len(c.result) = %v, graceful = %v", c.groupResource.String(), c.identifier, len(c.input), len(c.result), graceful)
+	c.forget(graceful)
+}
+
 // Nil timer means that add will not block (if it can't send event immediately, it will break the watcher)
 //
 // Note that bookmark events are never added via the add method only via the nonblockingAdd.
@@ -188,40 +217,8 @@ func (c *cacheWatcher) add(event *watchCacheEvent, timer *time.Timer) bool {
 		return true
 	}
 
-	closeFunc := func() {
-		// This means that we couldn't send event to that watcher.
-		// Since we don't want to block on it infinitely,
-		// we simply terminate it.
-		metrics.TerminatedWatchersCounter.WithLabelValues(c.groupResource.String()).Inc()
-		// This means that we couldn't send event to that watcher.
-		// Since we don't want to block on it infinitely, we simply terminate it.
-
-		// we are graceful = false, when:
-		//
-		// (a) The bookmarkAfterResourceVersionReceived hasn't been received,
-		//     we can safely terminate the watcher. Because the client is waiting
-		//     for this specific bookmark, and we even haven't received one.
-		// (b) We have seen the bookmarkAfterResourceVersion, and it was sent already to the client.
-		//     We can simply terminate the watcher.
-
-		// we are graceful = true, when:
-		//
-		// (a) We have seen a bookmark, but it hasn't been sent to the client yet.
-		//     That means we should drain the input buffer which contains
-		//     the bookmarkAfterResourceVersion we want. We do that to make progress
-		//     as clients can re-establish a new watch with the given RV and receive
-		//     further notifications.
-		graceful := func() bool {
-			c.stateMutex.Lock()
-			defer c.stateMutex.Unlock()
-			return c.state == cacheWatcherBookmarkReceived
-		}()
-		klog.V(1).Infof("Forcing %v watcher close due to unresponsiveness: %v. len(c.input) = %v, len(c.result) = %v, graceful = %v", c.groupResource.String(), c.identifier, len(c.input), len(c.result), graceful)
-		c.forget(graceful)
-	}
-
 	if timer == nil {
-		closeFunc()
+		c.terminateWatcher()
 		return false
 	}
 
@@ -230,7 +227,7 @@ func (c *cacheWatcher) add(event *watchCacheEvent, timer *time.Timer) bool {
 	case c.input <- event:
 		return true
 	case <-timer.C:
-		closeFunc()
+		c.terminateWatcher()
 		return false
 	}
 }
@@ -477,6 +474,18 @@ func (c *cacheWatcher) processInterval(ctx context.Context, cacheInterval *watch
 		resourceVersion = cacheInterval.resourceVersion
 	}
 
+	// terminates the watcher if the timer fires
+	stopCh := make(chan struct{})
+	go func() {
+		select {
+		case <-c.initEventTimer.C:
+			c.terminateWatcher()
+		case <-stopCh:
+		}
+	}()
+
+	c.initEventTimeBudget.returnUnused(maxBudget)
+
 	initEventCount := 0
 	for {
 		event, err := cacheInterval.Next()
@@ -496,12 +505,25 @@ func (c *cacheWatcher) processInterval(ctx context.Context, cacheInterval *watch
 			// custom clients, the cost of it is something that we
 			// are fully accepting.
 			klog.Warningf("couldn't retrieve watch event to serve: %#v", err)
+			close(stopCh)
 			return
 		}
 		if event == nil {
 			break
 		}
+
+		timeout := c.initEventTimeBudget.takeAvailable()
+		c.initEventTimer.Reset(timeout)
+		eventStartTime := time.Now()
+
 		c.sendWatchCacheEvent(event)
+
+		if !c.initEventTimer.Stop() {
+			close(stopCh)
+			return
+		}
+
+		c.initEventTimeBudget.returnUnused(timeout - time.Since(eventStartTime))
 
 		// With some events already sent, update resourceVersion so that
 		// events that were buffered and not yet processed won't be delivered
@@ -517,6 +539,7 @@ func (c *cacheWatcher) processInterval(ctx context.Context, cacheInterval *watch
 		}
 		initEventCount++
 	}
+	close(stopCh)
 
 	if initEventCount > 0 {
 		metrics.InitCounter.WithLabelValues(c.groupResource.String()).Add(float64(initEventCount))
@@ -560,6 +583,7 @@ func (c *cacheWatcher) makeUpInitEvents(ctx context.Context) {
 		c.initEventMutex.Unlock()
 
 		klog.V(1).Infof("Making up %d initEvents of %s (%s)", len(eventsToProcess), c.groupResource, c.identifier)
+		c.initEventTimeBudget.returnUnused(maxBudget)
 
 		for _, event := range eventsToProcess {
 			select {
@@ -568,9 +592,9 @@ func (c *cacheWatcher) makeUpInitEvents(ctx context.Context) {
 			default:
 			}
 
-			startTime := time.Now()
 			timeout := c.initEventTimeBudget.takeAvailable()
 			c.initEventTimer.Reset(timeout)
+			startTime := time.Now()
 
 			if !c.add(event, c.initEventTimer) {
 				return
