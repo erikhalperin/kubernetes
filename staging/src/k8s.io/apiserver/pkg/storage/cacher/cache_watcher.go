@@ -479,6 +479,7 @@ func (c *cacheWatcher) processInterval(ctx context.Context, cacheInterval *watch
 	go func() {
 		select {
 		case <-c.initEventTimer.C:
+			klog.V(2).Infof("timer fired in processInterval")
 			c.terminateWatcher()
 		case <-stopCh:
 		}
@@ -513,6 +514,7 @@ func (c *cacheWatcher) processInterval(ctx context.Context, cacheInterval *watch
 		}
 
 		timeout := c.initEventTimeBudget.takeAvailable()
+		klog.V(2).Infof("DEBUG: timeout for event = %v", timeout)
 		c.initEventTimer.Reset(timeout)
 		eventStartTime := time.Now()
 
