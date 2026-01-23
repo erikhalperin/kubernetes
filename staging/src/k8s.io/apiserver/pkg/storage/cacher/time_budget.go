@@ -25,7 +25,9 @@ import (
 
 const (
 	refreshPerSecond = 50 * time.Millisecond
-	maxBudget        = 100 * time.Millisecond
+	// todo
+	refreshPerSecondInitEvents = 1100 * time.Millisecond
+	maxBudget                  = 100 * time.Millisecond
 )
 
 // timeBudget implements a budget of time that you can use and is
@@ -57,11 +59,11 @@ type timeBudgetImpl struct {
 	last time.Time
 }
 
-func newTimeBudget() timeBudget {
+func newTimeBudget(refreshPerSec time.Duration) timeBudget {
 	result := &timeBudgetImpl{
 		clock:     clock.RealClock{},
 		budget:    time.Duration(0),
-		refresh:   refreshPerSecond,
+		refresh:   refreshPerSec,
 		maxBudget: maxBudget,
 	}
 	result.last = result.clock.Now()
