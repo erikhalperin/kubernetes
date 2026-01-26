@@ -86,11 +86,16 @@ type cacheWatcher struct {
 	// state holds a numeric value indicating the current state of the watcher
 	state int
 
+	// waitInitEventTemporary hold events that are dispatched while init events
+	// are being processed. These events are then processed after the init
+	// is done. Tens of thousands of init events can take many seconds.
+	waitInitEventTemporary []*watchCacheEvent
 	initEventMutex         sync.Mutex
 	initEventDone          bool
-	waitInitEventTemporary []*watchCacheEvent
-	initEventBudget        *eventBudget
-	initEventTimer         *time.Timer
+	// Because init events are continuous, they use an eventBudget timer
+	// which allows a time per event
+	initEventBudget *eventBudget
+	initEventTimer  *time.Timer
 }
 
 func newCacheWatcher(
@@ -103,7 +108,7 @@ func newCacheWatcher(
 	groupResource schema.GroupResource,
 	identifier string,
 ) *cacheWatcher {
-	cw := &cacheWatcher{
+	return &cacheWatcher{
 		input:               make(chan *watchCacheEvent, chanSize),
 		result:              make(chan watch.Event, chanSize),
 		done:                make(chan struct{}),
@@ -115,13 +120,9 @@ func newCacheWatcher(
 		allowWatchBookmarks: allowWatchBookmarks,
 		groupResource:       groupResource,
 		identifier:          identifier,
-		initEventBudget:     newEventBudget(2*time.Millisecond, 100*time.Millisecond, 100*time.Millisecond),
-		initEventTimer:      time.NewTimer(time.Duration(0)),
+		initEventBudget:     newEventBudget(100*time.Millisecond, 100*time.Millisecond, 2*time.Millisecond),
+		initEventTimer:      time.NewTimer(100 * time.Millisecond),
 	}
-	if !cw.initEventTimer.Stop() {
-		<-cw.initEventTimer.C
-	}
-	return cw
 }
 
 // Implements watch.Interface.
@@ -544,6 +545,7 @@ func (c *cacheWatcher) appendWaitInitEventTemporary(event *watchCacheEvent) bool
 	return true
 }
 
+// makeUpInitEvents processes all events that queued up while processing init events
 func (c *cacheWatcher) makeUpInitEvents(ctx context.Context) {
 	for {
 		// With the lock, copy waitInitEventTemporary to a temporary slice. Then release the lock

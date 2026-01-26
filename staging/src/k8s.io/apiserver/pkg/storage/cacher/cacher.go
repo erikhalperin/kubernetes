@@ -330,8 +330,8 @@ type Cacher struct {
 	watchersBuffer []*cacheWatcher
 	// blockedWatchers is a list of watchers whose buffer is currently full.
 	blockedWatchers []*cacheWatcher
-	// blockedWatchers is a list of watchers who are streaming initial events
-	// to the client when sendInitialEvents is true
+	// initBlockedWatchers is a list of watchers who are streaming initial events
+	// to the client when sendInitialEvents is true and whos buffer is current full.
 	initBlockedWatchers []*cacheWatcher
 	// watchersToStop is a list of watchers that were supposed to be stopped
 	// during current dispatching, but stopping was deferred to the end of
@@ -618,6 +618,7 @@ func (c *Cacher) Watch(ctx context.Context, key string, opts storage.ListOptions
 
 	c.setInitialEventsEndBookmarkIfRequested(cacheInterval, opts, c.watchCache.resourceVersion)
 
+	// Presize the waitInitEventTemporary slice for streaming list requests
 	if isListWatchRequest(opts) {
 		initEventCount := cacheInterval.buffer.endIndex
 		klog.V(1).Infof("initEvent count: %d", initEventCount)

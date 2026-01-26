@@ -111,7 +111,7 @@ type eventBudget struct {
 	expectedPerEvent time.Duration
 }
 
-func newEventBudget(expectedPerEvent, initialBudget, maxBudget time.Duration) *eventBudget {
+func newEventBudget(initialBudget, maxBudget, expectedPerEvent time.Duration) *eventBudget {
 	return &eventBudget{
 		budget:           initialBudget,
 		maxBudget:        maxBudget,
