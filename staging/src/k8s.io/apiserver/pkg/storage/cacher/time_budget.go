@@ -26,7 +26,7 @@ import (
 const (
 	refreshPerSecond = 50 * time.Millisecond
 	maxBudget        = 100 * time.Millisecond
-	maxEventTime     = 4 * time.Millisecond
+	maxEventTime     = 50 * time.Millisecond
 )
 
 // timeBudget implements a budget of time that you can use and is
