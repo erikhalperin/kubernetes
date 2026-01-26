@@ -108,7 +108,7 @@ func newCacheWatcher(
 	groupResource schema.GroupResource,
 	identifier string,
 ) *cacheWatcher {
-	return &cacheWatcher{
+	cw := &cacheWatcher{
 		input:               make(chan *watchCacheEvent, chanSize),
 		result:              make(chan watch.Event, chanSize),
 		done:                make(chan struct{}),
@@ -120,9 +120,16 @@ func newCacheWatcher(
 		allowWatchBookmarks: allowWatchBookmarks,
 		groupResource:       groupResource,
 		identifier:          identifier,
-		initEventBudget:     newEventBudget(100*time.Millisecond, 100*time.Millisecond, 2*time.Millisecond),
-		initEventTimer:      time.NewTimer(100 * time.Millisecond),
+		initEventBudget:     newEventBudget(maxBudget, maxEventTime),
+		initEventTimer:      time.NewTimer(time.Duration(0)),
 	}
+	// Ensure that timer is stopped.
+	if !cw.initEventTimer.Stop() {
+		// Consume triggered (but not yet received) timer event
+		// so that future reuse does not get a spurious timeout.
+		<-cw.initEventTimer.C
+	}
+	return cw
 }
 
 // Implements watch.Interface.

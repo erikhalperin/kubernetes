@@ -26,6 +26,7 @@ import (
 const (
 	refreshPerSecond = 50 * time.Millisecond
 	maxBudget        = 100 * time.Millisecond
+	maxEventTime     = 2 * time.Millisecond
 )
 
 // timeBudget implements a budget of time that you can use and is
@@ -111,9 +112,9 @@ type eventBudget struct {
 	expectedPerEvent time.Duration
 }
 
-func newEventBudget(initialBudget, maxBudget, expectedPerEvent time.Duration) *eventBudget {
+func newEventBudget(maxBudget, expectedPerEvent time.Duration) *eventBudget {
 	return &eventBudget{
-		budget:           initialBudget,
+		budget:           maxBudget,
 		maxBudget:        maxBudget,
 		expectedPerEvent: expectedPerEvent,
 	}
@@ -131,14 +132,9 @@ func (b *eventBudget) reset() {
 }
 
 // updateBudget updates the budget based on how long the event took
-// Returns false if budget is exhausted
-func (b *eventBudget) updateBudget(actual time.Duration) bool {
+func (b *eventBudget) updateBudget(actual time.Duration) {
 	b.budget -= actual - b.expectedPerEvent
-	if b.budget <= 0 {
-		return false
-	}
 	if b.budget > b.maxBudget {
 		b.budget = b.maxBudget
 	}
-	return true
 }
