@@ -86,11 +86,10 @@ type cacheWatcher struct {
 	// state holds a numeric value indicating the current state of the watcher
 	state int
 
-	// todo
 	initEventMutex         sync.Mutex
 	initEventDone          bool
 	waitInitEventTemporary []*watchCacheEvent
-	initEventTimeBudget    timeBudget
+	initEventBudget        *eventBudget
 	initEventTimer         *time.Timer
 }
 
@@ -116,13 +115,10 @@ func newCacheWatcher(
 		allowWatchBookmarks: allowWatchBookmarks,
 		groupResource:       groupResource,
 		identifier:          identifier,
-		initEventTimeBudget: newTimeBudget(refreshPerSecondInitEvents),
+		initEventBudget:     newEventBudget(2*time.Millisecond, 100*time.Millisecond, 100*time.Millisecond),
 		initEventTimer:      time.NewTimer(time.Duration(0)),
 	}
-	// Ensure that timer is stopped.
 	if !cw.initEventTimer.Stop() {
-		// Consume triggered (but not yet received) timer event
-		// so that future reuse does not get a spurious timeout.
 		<-cw.initEventTimer.C
 	}
 	return cw
@@ -474,19 +470,6 @@ func (c *cacheWatcher) processInterval(ctx context.Context, cacheInterval *watch
 		resourceVersion = cacheInterval.resourceVersion
 	}
 
-	// terminates the watcher if the timer fires
-	stopCh := make(chan struct{})
-	go func() {
-		select {
-		case <-c.initEventTimer.C:
-			klog.V(2).Infof("timer fired in processInterval")
-			c.terminateWatcher()
-		case <-stopCh:
-		}
-	}()
-
-	c.initEventTimeBudget.returnUnused(maxBudget)
-
 	initEventCount := 0
 	for {
 		event, err := cacheInterval.Next()
@@ -506,26 +489,20 @@ func (c *cacheWatcher) processInterval(ctx context.Context, cacheInterval *watch
 			// custom clients, the cost of it is something that we
 			// are fully accepting.
 			klog.Warningf("couldn't retrieve watch event to serve: %#v", err)
-			close(stopCh)
 			return
 		}
 		if event == nil {
 			break
 		}
 
-		timeout := c.initEventTimeBudget.takeAvailable()
-		klog.V(2).Infof("DEBUG: timeout for event = %v", timeout)
-		c.initEventTimer.Reset(timeout)
+		c.initEventTimer.Reset(c.initEventBudget.getTimeout())
 		eventStartTime := time.Now()
-
 		c.sendWatchCacheEvent(event)
-
 		if !c.initEventTimer.Stop() {
-			close(stopCh)
+			c.terminateWatcher()
 			return
 		}
-
-		c.initEventTimeBudget.returnUnused(timeout - time.Since(eventStartTime))
+		c.initEventBudget.updateBudget(time.Since(eventStartTime))
 
 		// With some events already sent, update resourceVersion so that
 		// events that were buffered and not yet processed won't be delivered
@@ -541,7 +518,6 @@ func (c *cacheWatcher) processInterval(ctx context.Context, cacheInterval *watch
 		}
 		initEventCount++
 	}
-	close(stopCh)
 
 	if initEventCount > 0 {
 		metrics.InitCounter.WithLabelValues(c.groupResource.String()).Add(float64(initEventCount))
@@ -585,7 +561,6 @@ func (c *cacheWatcher) makeUpInitEvents(ctx context.Context) {
 		c.initEventMutex.Unlock()
 
 		klog.V(1).Infof("Making up %d initEvents of %s (%s)", len(eventsToProcess), c.groupResource, c.identifier)
-		c.initEventTimeBudget.returnUnused(maxBudget)
 
 		for _, event := range eventsToProcess {
 			select {
@@ -594,20 +569,15 @@ func (c *cacheWatcher) makeUpInitEvents(ctx context.Context) {
 			default:
 			}
 
-			timeout := c.initEventTimeBudget.takeAvailable()
-			c.initEventTimer.Reset(timeout)
-			startTime := time.Now()
-
+			c.initEventTimer.Reset(c.initEventBudget.getTimeout())
+			eventStartTime := time.Now()
 			if !c.add(event, c.initEventTimer) {
 				return
 			}
-
-			// Stop the timer if it hasn't fired
 			if !c.initEventTimer.Stop() {
-				// Drain the channel if timer already fired
 				<-c.initEventTimer.C
 			}
-			c.initEventTimeBudget.returnUnused(timeout - time.Since(startTime))
+			c.initEventBudget.updateBudget(time.Since(eventStartTime))
 		}
 	}
 }

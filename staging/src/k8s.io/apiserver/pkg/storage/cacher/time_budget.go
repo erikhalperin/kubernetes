@@ -25,9 +25,7 @@ import (
 
 const (
 	refreshPerSecond = 50 * time.Millisecond
-	// todo
-	refreshPerSecondInitEvents = 1100 * time.Millisecond
-	maxBudget                  = 100 * time.Millisecond
+	maxBudget        = 100 * time.Millisecond
 )
 
 // timeBudget implements a budget of time that you can use and is
@@ -59,11 +57,11 @@ type timeBudgetImpl struct {
 	last time.Time
 }
 
-func newTimeBudget(refreshPerSec time.Duration) timeBudget {
+func newTimeBudget() timeBudget {
 	result := &timeBudgetImpl{
 		clock:     clock.RealClock{},
 		budget:    time.Duration(0),
-		refresh:   refreshPerSec,
+		refresh:   refreshPerSecond,
 		maxBudget: maxBudget,
 	}
 	result.last = result.clock.Now()
@@ -101,4 +99,41 @@ func (t *timeBudgetImpl) returnUnused(unused time.Duration) {
 	if t.budget = t.budget + unused; t.budget > t.maxBudget {
 		t.budget = t.maxBudget
 	}
+}
+
+// eventBudget implements a budget of time designed to track whether a client
+// is keeping up with an expected throughput. Each event that takes longer than
+// expected depletes the budget while events faster than expected restore
+// the budget
+type eventBudget struct {
+	budget           time.Duration
+	maxBudget        time.Duration
+	expectedPerEvent time.Duration
+}
+
+func newEventBudget(expectedPerEvent, initialBudget, maxBudget time.Duration) *eventBudget {
+	return &eventBudget{
+		budget:           initialBudget,
+		maxBudget:        maxBudget,
+		expectedPerEvent: expectedPerEvent,
+	}
+}
+
+// getTimeout returns how long the next event is allowed to take
+// This is the expected duration plus any accumulated budget
+func (b *eventBudget) getTimeout() time.Duration {
+	return b.expectedPerEvent + b.budget
+}
+
+// updateBudget updates the budget based on how long the event took
+// Returns false if budget is exhausted
+func (b *eventBudget) updateBudget(actual time.Duration) bool {
+	b.budget -= actual - b.expectedPerEvent
+	if b.budget <= 0 {
+		return false
+	}
+	if b.budget > b.maxBudget {
+		b.budget = b.maxBudget
+	}
+	return true
 }
