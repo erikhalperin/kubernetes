@@ -561,6 +561,7 @@ func (c *cacheWatcher) makeUpInitEvents(ctx context.Context) {
 		c.initEventMutex.Unlock()
 
 		klog.V(1).Infof("Making up %d initEvents of %s (%s)", len(eventsToProcess), c.groupResource, c.identifier)
+		c.initEventBudget.reset()
 
 		for _, event := range eventsToProcess {
 			select {

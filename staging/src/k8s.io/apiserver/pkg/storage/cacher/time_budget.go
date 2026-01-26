@@ -125,6 +125,11 @@ func (b *eventBudget) getTimeout() time.Duration {
 	return b.expectedPerEvent + b.budget
 }
 
+// reset restores the budget to its maximum value
+func (b *eventBudget) reset() {
+	b.budget = b.maxBudget
+}
+
 // updateBudget updates the budget based on how long the event took
 // Returns false if budget is exhausted
 func (b *eventBudget) updateBudget(actual time.Duration) bool {
