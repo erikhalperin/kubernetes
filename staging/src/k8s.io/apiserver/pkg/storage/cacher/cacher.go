@@ -331,7 +331,7 @@ type Cacher struct {
 	// blockedWatchers is a list of watchers whose buffer is currently full.
 	blockedWatchers []*cacheWatcher
 	// initBlockedWatchers is a list of watchers who are streaming initial events
-	// to the client when sendInitialEvents is true and whos buffer is current full.
+	// to the client when sendInitialEvents is true and whose buffer is current full.
 	initBlockedWatchers []*cacheWatcher
 	// watchersToStop is a list of watchers that were supposed to be stopped
 	// during current dispatching, but stopping was deferred to the end of
@@ -622,9 +622,9 @@ func (c *Cacher) Watch(ctx context.Context, key string, opts storage.ListOptions
 	if isListWatchRequest(opts) {
 		initEventCount := cacheInterval.buffer.endIndex
 		klog.V(1).Infof("initEvent count: %d", initEventCount)
-		// The slice is of pointers, each pointer is 8 bytes, so the starting max size is 800KB
-		bufferSize := min(100000, initEventCount/2)
-		watcher.waitInitEventTemporary = make([]*watchCacheEvent, 0, bufferSize)
+		// The slice is of pointers, each pointer is 8 bytes, so the starting max size is 80KB
+		bufferSize := min(10000, initEventCount/4)
+		watcher.pendingEventsBuffer = make([]*watchCacheEvent, 0, bufferSize)
 	}
 
 	addedWatcher := false
@@ -990,7 +990,7 @@ func (c *Cacher) dispatchEvent(event *watchCacheEvent) {
 		c.blockedWatchers = c.blockedWatchers[:0]
 		for _, watcher := range c.watchersBuffer {
 			if !watcher.nonblockingAdd(event) {
-				if !watcher.initEventDone {
+				if !watcher.initEventsDone {
 					c.initBlockedWatchers = append(c.initBlockedWatchers, watcher)
 				} else {
 					c.blockedWatchers = append(c.blockedWatchers, watcher)
@@ -999,7 +999,7 @@ func (c *Cacher) dispatchEvent(event *watchCacheEvent) {
 		}
 
 		for _, watcher := range c.initBlockedWatchers {
-			if !watcher.appendWaitInitEventTemporary(event) {
+			if !watcher.bufferPendingEvent(event) {
 				// If init events finished in between the above and now, try a
 				// nonblockingAdd
 				if !watcher.nonblockingAdd(event) {

@@ -86,14 +86,15 @@ type cacheWatcher struct {
 	// state holds a numeric value indicating the current state of the watcher
 	state int
 
-	// waitInitEventTemporary hold events that are dispatched while init events
-	// are being processed. These events are then processed after the init
-	// is done. Tens of thousands of init events can take many seconds.
-	waitInitEventTemporary []*watchCacheEvent
-	initEventMutex         sync.Mutex
-	initEventDone          bool
-	// Because init events are continuous, they use an eventBudget timer
-	// which allows a time per event
+	// pendingEventsBuffer holds pointers to events that are dispatched while init events
+	// are being processed for streaming watches. These events are then processed
+	// after the init is done. Tens of thousands of init events can take many seconds.
+	pendingEventsBuffer      []*watchCacheEvent
+	pendingEventsBufferMutex sync.Mutex
+	initEventsDone           bool
+	// initEventBudget is a time budget applied to processing init events for
+	// streaming watches. Because init events are continuous, they use an eventBudget
+	// timer which allows a time per event
 	initEventBudget *eventBudget
 	initEventTimer  *time.Timer
 }
@@ -562,32 +563,32 @@ func (c *cacheWatcher) processInterval(ctx context.Context, cacheInterval *watch
 	c.process(ctx, resourceVersion)
 }
 
-func (c *cacheWatcher) appendWaitInitEventTemporary(event *watchCacheEvent) bool {
-	c.initEventMutex.Lock()
-	defer c.initEventMutex.Unlock()
-	if c.initEventDone {
+func (c *cacheWatcher) bufferPendingEvent(event *watchCacheEvent) bool {
+	c.pendingEventsBufferMutex.Lock()
+	defer c.pendingEventsBufferMutex.Unlock()
+	if c.initEventsDone {
 		return false
 	}
-	c.waitInitEventTemporary = append(c.waitInitEventTemporary, event)
+	c.pendingEventsBuffer = append(c.pendingEventsBuffer, event)
 	return true
 }
 
-// makeUpInitEvents processes all events that queued up while processing init events
-func (c *cacheWatcher) makeUpInitEvents(ctx context.Context) {
+// processPendingEvents processes all events that queued up while processing init events
+func (c *cacheWatcher) processPendingEvents(ctx context.Context) {
 	for {
-		// With the lock, copy waitInitEventTemporary to a temporary slice. Then release the lock
+		// With the lock, copy pendingEventsBuffer to a temporary slice. Then release the lock
 		// and drain from the temporary slice without holding the lock, so dispatchEvents can
-		// continue adding to waitInitEventTemporary. This goes on in a loop because events may be
-		// getting added to waitInitEventTemporary while it's getting drained
-		c.initEventMutex.Lock()
-		eventsToProcess := c.waitInitEventTemporary
-		c.waitInitEventTemporary = nil
+		// continue adding to pendingEventsBuffer. This goes on in a loop because events may be
+		// getting added to pendingEventsBuffer while it's getting drained
+		c.pendingEventsBufferMutex.Lock()
+		eventsToProcess := c.pendingEventsBuffer
+		c.pendingEventsBuffer = nil
 		if len(eventsToProcess) == 0 {
-			c.initEventDone = true
-			c.initEventMutex.Unlock()
+			c.initEventsDone = true
+			c.pendingEventsBufferMutex.Unlock()
 			return
 		}
-		c.initEventMutex.Unlock()
+		c.pendingEventsBufferMutex.Unlock()
 
 		klog.V(1).Infof("Making up %d initEvents of %s (%s)", len(eventsToProcess), c.groupResource, c.identifier)
 		c.initEventBudget.reset()
@@ -621,7 +622,7 @@ func (c *cacheWatcher) process(ctx context.Context, resourceVersion uint64) {
 	//   process, but we're leaving this to the tuning phase.
 	utilflowcontrol.WatchInitialized(ctx)
 
-	go c.makeUpInitEvents(ctx)
+	go c.processPendingEvents(ctx)
 
 	for {
 		select {
