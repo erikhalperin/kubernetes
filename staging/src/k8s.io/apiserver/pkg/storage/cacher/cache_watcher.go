@@ -418,11 +418,14 @@ func (c *cacheWatcher) convertToWatchEvent(event *watchCacheEvent) *watch.Event 
 }
 
 // NOTE: sendWatchCacheEvent is assumed to not modify <event> !!!
-func (c *cacheWatcher) sendWatchCacheEvent(event *watchCacheEvent) {
+// If non-nil timer, the send will be aborted if the timer fires,
+// and the watcher will be terminated. Returns false.
+// Is blocking with a nil timer.
+func (c *cacheWatcher) sendWatchCacheEvent(event *watchCacheEvent, timer *time.Timer) bool {
 	watchEvent := c.convertToWatchEvent(event)
 	if watchEvent == nil {
 		// Watcher is not interested in that object.
-		return
+		return true
 	}
 
 	// We need to ensure that if we put event X to the c.result, all
@@ -439,14 +442,24 @@ func (c *cacheWatcher) sendWatchCacheEvent(event *watchCacheEvent) {
 	// events.
 	select {
 	case <-c.done:
-		return
+		return true
 	default:
+	}
+
+	var timerC <-chan time.Time
+	if timer != nil {
+		timerC = timer.C
 	}
 
 	select {
 	case c.result <- *watchEvent:
 		c.markBookmarkAfterRvSent(event)
+		return true
+	case <-timerC:
+		c.terminateWatcher()
+		return false
 	case <-c.done:
+		return true
 	}
 }
 
@@ -505,10 +518,11 @@ func (c *cacheWatcher) processInterval(ctx context.Context, cacheInterval *watch
 
 		c.initEventTimer.Reset(c.initEventBudget.getTimeout())
 		eventStartTime := time.Now()
-		c.sendWatchCacheEvent(event)
-		if !c.initEventTimer.Stop() {
-			c.terminateWatcher()
+		if !c.sendWatchCacheEvent(event, c.initEventTimer) {
 			return
+		}
+		if !c.initEventTimer.Stop() {
+			<-c.initEventTimer.C
 		}
 		c.initEventBudget.updateBudget(time.Since(eventStartTime))
 
@@ -537,7 +551,13 @@ func (c *cacheWatcher) processInterval(ctx context.Context, cacheInterval *watch
 
 	// send bookmark after sending all events in cacheInterval for watchlist request
 	if cacheInterval.initialEventsEndBookmark != nil {
-		c.sendWatchCacheEvent(cacheInterval.initialEventsEndBookmark)
+		c.initEventTimer.Reset(c.initEventBudget.getTimeout())
+		if !c.sendWatchCacheEvent(cacheInterval.initialEventsEndBookmark, c.initEventTimer) {
+			return
+		}
+		if !c.initEventTimer.Stop() {
+			<-c.initEventTimer.C
+		}
 	}
 	c.process(ctx, resourceVersion)
 }
@@ -613,7 +633,7 @@ func (c *cacheWatcher) process(ctx context.Context, resourceVersion uint64) {
 			// or a bookmark event with an RV equal to resourceVersion
 			// if we haven't sent one to the client
 			if event.ResourceVersion > resourceVersion || (event.Type == watch.Bookmark && event.ResourceVersion == resourceVersion && !c.wasBookmarkAfterRvSent()) {
-				c.sendWatchCacheEvent(event)
+				c.sendWatchCacheEvent(event, nil)
 			}
 		case <-ctx.Done():
 			return
