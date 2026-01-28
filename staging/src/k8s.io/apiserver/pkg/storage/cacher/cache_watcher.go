@@ -121,7 +121,7 @@ func newCacheWatcher(
 		allowWatchBookmarks: allowWatchBookmarks,
 		groupResource:       groupResource,
 		identifier:          identifier,
-		initEventBudget:     newEventBudget(1*time.Second, maxEventTime),
+		initEventBudget:     newEventBudget(30*time.Second, maxEventTime),
 		initEventTimer:      time.NewTimer(time.Duration(0)),
 	}
 	// Ensure that timer is stopped.
