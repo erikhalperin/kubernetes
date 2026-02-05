@@ -582,6 +582,9 @@ func (c *cacheWatcher) process(ctx context.Context, resourceVersion uint64) {
 	//   process, but we're leaving this to the tuning phase.
 	utilflowcontrol.WatchInitialized(ctx)
 
+	// Processes all events that queued up while processing init events.
+	// The c.input channel will remain empty during this time, as events
+	// will be dispatched to c.pendingEventsBuffer instead
 	c.processPendingEvents(ctx)
 
 	for {
