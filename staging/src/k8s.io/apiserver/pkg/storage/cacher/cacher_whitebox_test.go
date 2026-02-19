@@ -3545,3 +3545,95 @@ func TestRetryAfterForUnreadyCache(t *testing.T) {
 		t.Fatalf("Unexpected retry after: %v", statusError.Status().Details.RetryAfterSeconds)
 	}
 }
+
+func TestPendingEventsDeliveredInOrder(t *testing.T) {
+	featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.WatchList, true)
+	forceRequestWatchProgressSupport(t)
+	backingStorage := &dummyStorage{}
+	cacher, v, err := newTestCacher(backingStorage)
+	if err != nil {
+		t.Fatalf("Couldn't create cacher: %v", err)
+	}
+	defer cacher.Stop()
+
+	if !utilfeature.DefaultFeatureGate.Enabled(features.ResilientWatchCacheInitialization) {
+		if err := cacher.ready.wait(context.Background()); err != nil {
+			t.Fatalf("unexpected error waiting for the cache to be ready")
+		}
+	}
+
+	cacher.dispatchTimeoutBudget = &fakeTimeBudget{}
+
+	makePod := func(i int) *examplev1.Pod {
+		return &examplev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:            fmt.Sprintf("pod-%d", 1000+i),
+				Namespace:       "ns",
+				ResourceVersion: fmt.Sprintf("%d", 1000+i),
+			},
+		}
+	}
+
+	totalInitPods := 1000
+	for i := 0; i < totalInitPods; i++ {
+		if err := cacher.watchCache.Add(makePod(i)); err != nil {
+			t.Fatalf("error adding pod: %v", err)
+		}
+	}
+
+	pred := storage.Everything
+	pred.AllowWatchBookmarks = true
+	w, err := cacher.Watch(context.TODO(), "pods/ns", storage.ListOptions{
+		ResourceVersion:   "0",
+		Predicate:         pred,
+		SendInitialEvents: pointer.Bool(true),
+	})
+	if err != nil {
+		t.Fatalf("Failed to create watch: %v", err)
+	}
+	defer w.Stop()
+
+	additionalPods := 100
+	for i := totalInitPods; i < totalInitPods+additionalPods; i++ {
+		if err := cacher.watchCache.Add(makePod(i)); err != nil {
+			t.Fatalf("error adding pod: %v", err)
+		}
+	}
+
+	currentRV := uint64(0)
+	eventsReceived := 0
+	timeout := time.After(10 * time.Second)
+	for eventsReceived < totalInitPods+additionalPods {
+		select {
+		case event, ok := <-w.ResultChan():
+			if !ok {
+				t.Fatalf("watch closed after %d events, expected %d", eventsReceived, totalInitPods+additionalPods)
+			}
+			if event.Type == watch.Error {
+				t.Fatalf("unexpected error event: %v", event.Object)
+			}
+			if event.Type == watch.Bookmark {
+				continue
+			}
+			rv, err := v.ParseResourceVersion(event.Object.(metaRuntimeInterface).GetResourceVersion())
+			if err != nil {
+				t.Fatalf("unexpected parsing error: %v", err)
+			}
+			if rv < currentRV {
+				t.Fatalf("events out of order: got rv %d after rv %d (after %d events)", rv, currentRV, eventsReceived)
+			}
+			currentRV = rv
+			eventsReceived++
+		case <-timeout:
+			t.Fatalf("timed out after receiving %d events, expected %d", eventsReceived, totalInitPods+additionalPods)
+		}
+	}
+
+	if eventsReceived != totalInitPods+additionalPods {
+		t.Fatalf("expected %d events, got %d", totalInitPods+additionalPods, eventsReceived)
+	}
+	expectedLastRV := uint64(1000 + totalInitPods + additionalPods - 1)
+	if currentRV != expectedLastRV {
+		t.Fatalf("expected final resource version %d, got %d", expectedLastRV, currentRV)
+	}
+}
