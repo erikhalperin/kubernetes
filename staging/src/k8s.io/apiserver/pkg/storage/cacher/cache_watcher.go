@@ -573,6 +573,35 @@ func (c *cacheWatcher) bufferPendingEvent(event *watchCacheEvent) bool {
 	return true
 }
 
+func (c *cacheWatcher) process(ctx context.Context, resourceVersion uint64) {
+	// At this point we already start processing incoming watch events.
+	// However, the init event can still be processed because their serialization
+	// and sending to the client happens asynchrnously.
+	// TODO: As describe in the KEP, we would like to estimate that by delaying
+	//   the initialization signal proportionally to the number of events to
+	//   process, but we're leaving this to the tuning phase.
+	utilflowcontrol.WatchInitialized(ctx)
+
+	c.processPendingEvents(ctx)
+
+	for {
+		select {
+		case event, ok := <-c.input:
+			if !ok {
+				return
+			}
+			// only send events newer than resourceVersion
+			// or a bookmark event with an RV equal to resourceVersion
+			// if we haven't sent one to the client
+			if event.ResourceVersion > resourceVersion || (event.Type == watch.Bookmark && event.ResourceVersion == resourceVersion && !c.wasBookmarkAfterRvSent()) {
+				c.sendWatchCacheEvent(event, nil)
+			}
+		case <-ctx.Done():
+			return
+		}
+	}
+}
+
 // processPendingEvents processes all events that queued up while processing init events
 func (c *cacheWatcher) processPendingEvents(ctx context.Context) {
 	for {
@@ -602,42 +631,13 @@ func (c *cacheWatcher) processPendingEvents(ctx context.Context) {
 
 			c.initEventTimer.Reset(c.initEventBudget.getTimeout())
 			eventStartTime := time.Now()
-			if !c.add(event, c.initEventTimer) {
+			if !c.sendWatchCacheEvent(event, c.initEventTimer) {
 				return
 			}
 			if !c.initEventTimer.Stop() {
 				<-c.initEventTimer.C
 			}
 			c.initEventBudget.updateBudget(time.Since(eventStartTime))
-		}
-	}
-}
-
-func (c *cacheWatcher) process(ctx context.Context, resourceVersion uint64) {
-	// At this point we already start processing incoming watch events.
-	// However, the init event can still be processed because their serialization
-	// and sending to the client happens asynchrnously.
-	// TODO: As describe in the KEP, we would like to estimate that by delaying
-	//   the initialization signal proportionally to the number of events to
-	//   process, but we're leaving this to the tuning phase.
-	utilflowcontrol.WatchInitialized(ctx)
-
-	go c.processPendingEvents(ctx)
-
-	for {
-		select {
-		case event, ok := <-c.input:
-			if !ok {
-				return
-			}
-			// only send events newer than resourceVersion
-			// or a bookmark event with an RV equal to resourceVersion
-			// if we haven't sent one to the client
-			if event.ResourceVersion > resourceVersion || (event.Type == watch.Bookmark && event.ResourceVersion == resourceVersion && !c.wasBookmarkAfterRvSent()) {
-				c.sendWatchCacheEvent(event, nil)
-			}
-		case <-ctx.Done():
-			return
 		}
 	}
 }
