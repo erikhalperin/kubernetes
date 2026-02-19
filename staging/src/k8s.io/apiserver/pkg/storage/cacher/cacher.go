@@ -621,7 +621,6 @@ func (c *Cacher) Watch(ctx context.Context, key string, opts storage.ListOptions
 	// Presize the waitInitEventTemporary slice for streaming list requests
 	if isListWatchRequest(opts) {
 		initEventCount := cacheInterval.buffer.endIndex
-		klog.V(1).Infof("initEvent count: %d", initEventCount)
 		// The slice is of pointers, each pointer is 8 bytes, so the starting max size is 80KB
 		bufferSize := min(10000, initEventCount/4)
 		watcher.pendingEventsBuffer = make([]*watchCacheEvent, 0, bufferSize)

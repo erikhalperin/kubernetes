@@ -590,7 +590,7 @@ func (c *cacheWatcher) processPendingEvents(ctx context.Context) {
 		}
 		c.pendingEventsBufferMutex.Unlock()
 
-		klog.V(1).Infof("Making up %d initEvents of %s (%s)", len(eventsToProcess), c.groupResource, c.identifier)
+		klog.V(1).Infof("Processing %d pending init events of %s (%s)", len(eventsToProcess), c.groupResource, c.identifier)
 		c.initEventBudget.reset()
 
 		for _, event := range eventsToProcess {
