@@ -985,7 +985,6 @@ func (c *Cacher) dispatchEvent(event *watchCacheEvent) {
 		c.blockedWatchers = c.blockedWatchers[:0]
 		for _, watcher := range c.watchersBuffer {
 			if !watcher.initEventsDone {
-				// todo why
 				if !watcher.bufferPendingEvent(event) {
 					// If init events could finish in between checking it and
 					// buffer the pending event
