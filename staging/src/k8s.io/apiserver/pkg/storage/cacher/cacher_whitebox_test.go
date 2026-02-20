@@ -3549,7 +3549,32 @@ func TestRetryAfterForUnreadyCache(t *testing.T) {
 func TestPendingEventsDeliveredInOrder(t *testing.T) {
 	featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.WatchList, true)
 	forceRequestWatchProgressSupport(t)
+
+	totalInitPods := 10
+	additionalPods := 7
+	initListRV := fmt.Sprintf("%d", 1000+totalInitPods-1)
+
+	makePod := func(i int) example.Pod {
+		return example.Pod{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:            fmt.Sprintf("pod-%d", 1000+i),
+				Namespace:       "ns",
+				ResourceVersion: fmt.Sprintf("%d", 1000+i),
+			},
+		}
+	}
+
+	// Add initial pods right to the backing storage of the watcher
 	backingStorage := &dummyStorage{}
+	backingStorage.getListFn = func(_ context.Context, _ string, _ storage.ListOptions, listObj runtime.Object) error {
+		podList := listObj.(*example.PodList)
+		podList.ListMeta = metav1.ListMeta{ResourceVersion: initListRV}
+		for i := 0; i < totalInitPods; i++ {
+			podList.Items = append(podList.Items, makePod(i))
+		}
+		return nil
+	}
+
 	cacher, v, err := newTestCacher(backingStorage)
 	if err != nil {
 		t.Fatalf("Couldn't create cacher: %v", err)
@@ -3564,23 +3589,6 @@ func TestPendingEventsDeliveredInOrder(t *testing.T) {
 
 	cacher.dispatchTimeoutBudget = &fakeTimeBudget{}
 
-	makePod := func(i int) *examplev1.Pod {
-		return &examplev1.Pod{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:            fmt.Sprintf("pod-%d", 1000+i),
-				Namespace:       "ns",
-				ResourceVersion: fmt.Sprintf("%d", 1000+i),
-			},
-		}
-	}
-
-	totalInitPods := 1000
-	for i := 0; i < totalInitPods; i++ {
-		if err := cacher.watchCache.Add(makePod(i)); err != nil {
-			t.Fatalf("error adding pod: %v", err)
-		}
-	}
-
 	pred := storage.Everything
 	pred.AllowWatchBookmarks = true
 	w, err := cacher.Watch(context.TODO(), "pods/ns", storage.ListOptions{
@@ -3593,11 +3601,23 @@ func TestPendingEventsDeliveredInOrder(t *testing.T) {
 	}
 	defer w.Stop()
 
-	additionalPods := 100
 	for i := totalInitPods; i < totalInitPods+additionalPods; i++ {
-		if err := cacher.watchCache.Add(makePod(i)); err != nil {
+		pod := makePod(i)
+		if err := cacher.watchCache.Add(&pod); err != nil {
 			t.Fatalf("error adding pod: %v", err)
 		}
+	}
+
+	cw := w.(*cacheWatcher)
+	var pendingLen int
+	// Events are added to the watcher async, wait for the pending buffer to fill
+	if err := wait.PollUntilContextTimeout(context.Background(), 10*time.Millisecond, time.Second, true, func(_ context.Context) (bool, error) {
+		cw.pendingEventsBufferMutex.Lock()
+		pendingLen = len(cw.pendingEventsBuffer)
+		cw.pendingEventsBufferMutex.Unlock()
+		return pendingLen == additionalPods, nil
+	}); err != nil {
+		t.Fatalf("expected %d pending events, got %d", additionalPods, pendingLen)
 	}
 
 	currentRV := uint64(0)
