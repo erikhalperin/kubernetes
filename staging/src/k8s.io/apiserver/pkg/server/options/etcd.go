@@ -201,6 +201,11 @@ func (s *EtcdOptions) AddFlags(fs *pflag.FlagSet) {
 	fs.DurationVar(&s.StorageConfig.CompactionInterval, "etcd-compaction-interval", s.StorageConfig.CompactionInterval,
 		"The interval of compaction requests. If 0, the compaction request from apiserver is disabled.")
 
+	fs.DurationVar(&s.StorageConfig.MaxEventBudget, "streaming-list-watch-max-event-budget", s.StorageConfig.MaxEventBudget,
+		"Max time budget for streaming initial events during watches")
+	fs.DurationVar(&s.StorageConfig.ExpectedEventTime, "streaming-list-watch-expected-event-time", s.StorageConfig.ExpectedEventTime,
+		"Expected time per event for for streaming initial events during watches")
+
 	fs.DurationVar(&s.StorageConfig.CountMetricPollPeriod, "etcd-count-metric-poll-period", s.StorageConfig.CountMetricPollPeriod, ""+
 		"Frequency of polling etcd for number of resources per type. 0 disables the metric collection.")
 
