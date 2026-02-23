@@ -2748,8 +2748,6 @@ func TestForgetWatcher(t *testing.T) {
 		true,
 		schema.GroupResource{Resource: "pods"},
 		"1",
-		30*time.Second,
-		1*time.Second,
 	)
 	forgetWatcherFn = forgetWatcher(cacher, w, 0, namespacedName{}, "", false)
 	addWatcher := func(w *cacheWatcher) {

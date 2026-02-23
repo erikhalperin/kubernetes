@@ -120,9 +120,6 @@ type Config struct {
 	Codec runtime.Codec
 
 	Clock clock.WithTicker
-
-	MaxEventBudget    time.Duration
-	ExpectedEventTime time.Duration
 }
 
 type watchersMap map[int]*cacheWatcher
@@ -342,9 +339,6 @@ type Cacher struct {
 	bookmarkWatchers *watcherBookmarkTimeBuckets
 	// expiredBookmarkWatchers is a list of watchers that were expired and need to be schedule for a next bookmark event
 	expiredBookmarkWatchers []*cacheWatcher
-
-	maxEventBudget    time.Duration
-	expectedEventTime time.Duration
 }
 
 // NewCacherFromConfig creates a new Cacher responsible for servicing WATCH and LIST requests from
@@ -406,9 +400,7 @@ func NewCacherFromConfig(config Config) (*Cacher, error) {
 		stopCh:           stopCh,
 		clock:            config.Clock,
 		timer:            time.NewTimer(time.Duration(0)),
-		bookmarkWatchers:  newTimeBucketWatchers(config.Clock, defaultBookmarkFrequency),
-		maxEventBudget:    config.MaxEventBudget,
-		expectedEventTime: config.ExpectedEventTime,
+		bookmarkWatchers: newTimeBucketWatchers(config.Clock, defaultBookmarkFrequency),
 	}
 
 	// Ensure that timer is stopped.
@@ -590,8 +582,6 @@ func (c *Cacher) Watch(ctx context.Context, key string, opts storage.ListOptions
 		pred.AllowWatchBookmarks,
 		c.groupResource,
 		identifier,
-		c.maxEventBudget,
-		c.expectedEventTime,
 	)
 
 	// note that c.waitUntilWatchCacheFreshAndForceAllEvents must be called without

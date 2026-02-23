@@ -108,8 +108,6 @@ func newCacheWatcher(
 	allowWatchBookmarks bool,
 	groupResource schema.GroupResource,
 	identifier string,
-	maxEventBudget time.Duration,
-	expectedEventTime time.Duration,
 ) *cacheWatcher {
 	cw := &cacheWatcher{
 		input:               make(chan *watchCacheEvent, chanSize),
@@ -123,7 +121,7 @@ func newCacheWatcher(
 		allowWatchBookmarks: allowWatchBookmarks,
 		groupResource:       groupResource,
 		identifier:          identifier,
-		initEventBudget:     newEventBudget(maxEventBudget, expectedEventTime),
+		initEventBudget:     newEventBudget(30*time.Second, maxEventTime),
 		initEventTimer:      time.NewTimer(time.Duration(0)),
 	}
 	// Ensure that timer is stopped.

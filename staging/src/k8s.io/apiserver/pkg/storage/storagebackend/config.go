@@ -40,8 +40,6 @@ const (
 	DefaultEventsHistoryWindow  = 75 * time.Second
 	DefaultHealthcheckTimeout   = 2 * time.Second
 	DefaultReadinessTimeout     = 2 * time.Second
-	DefaultMaxEventBudget       = 30 * time.Second
-	DefaultExpectedEventTime    = 1 * time.Second
 )
 
 // TransportConfig holds all connection related info,  i.e. equal TransportConfig means equal servers we talk to.
@@ -85,8 +83,6 @@ type Config struct {
 	DBMetricPollInterval time.Duration
 	// EventsHistoryWindow specifies minimum history duration that storage is keeping.
 	EventsHistoryWindow time.Duration
-	MaxEventBudget      time.Duration
-	ExpectedEventTime   time.Duration
 	// HealthcheckTimeout specifies the timeout used when checking health
 	HealthcheckTimeout time.Duration
 	// ReadycheckTimeout specifies the timeout used when checking readiness
@@ -123,8 +119,6 @@ func NewDefaultConfig(prefix string, codec runtime.Codec) *Config {
 		CompactionInterval:   DefaultCompactInterval,
 		DBMetricPollInterval: DefaultDBMetricPollInterval,
 		EventsHistoryWindow:  DefaultEventsHistoryWindow,
-		MaxEventBudget:       DefaultMaxEventBudget,
-		ExpectedEventTime:    DefaultExpectedEventTime,
 		HealthcheckTimeout:   DefaultHealthcheckTimeout,
 		ReadycheckTimeout:    DefaultReadinessTimeout,
 		LeaseManagerConfig:   etcd3.NewDefaultLeaseManagerConfig(),
