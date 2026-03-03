@@ -582,7 +582,7 @@ func (c *cacheWatcher) process(ctx context.Context, resourceVersion uint64) {
 	//   process, but we're leaving this to the tuning phase.
 	utilflowcontrol.WatchInitialized(ctx)
 
-	c.processPendingEvents(ctx)
+	c.processPendingEvents(ctx, resourceVersion)
 
 	for {
 		select {
@@ -603,7 +603,7 @@ func (c *cacheWatcher) process(ctx context.Context, resourceVersion uint64) {
 }
 
 // processPendingEvents processes all events that queued up while processing init events
-func (c *cacheWatcher) processPendingEvents(ctx context.Context) {
+func (c *cacheWatcher) processPendingEvents(ctx context.Context, resourceVersion uint64) {
 	for {
 		// With the lock, copy pendingEventsBuffer to a temporary slice. Then release the lock
 		// and drain from the temporary slice without holding the lock, so dispatchEvents can
@@ -631,8 +631,15 @@ func (c *cacheWatcher) processPendingEvents(ctx context.Context) {
 
 			c.initEventTimer.Reset(c.initEventBudget.getTimeout())
 			eventStartTime := time.Now()
-			if !c.sendWatchCacheEvent(event, c.initEventTimer) {
-				return
+
+			if event.ResourceVersion < resourceVersion {
+				klog.V(1).Infof("Found event RV %d < requested RV %d of %s (%s)", event.ResourceVersion, resourceVersion, c.groupResource, c.identifier)
+			}
+
+			if event.ResourceVersion > resourceVersion || (event.Type == watch.Bookmark && event.ResourceVersion == resourceVersion && !c.wasBookmarkAfterRvSent()) {
+				if !c.sendWatchCacheEvent(event, c.initEventTimer) {
+					return
+				}
 			}
 			if !c.initEventTimer.Stop() {
 				<-c.initEventTimer.C

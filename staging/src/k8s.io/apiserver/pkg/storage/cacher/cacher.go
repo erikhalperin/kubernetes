@@ -613,6 +613,10 @@ func (c *Cacher) Watch(ctx context.Context, key string, opts storage.ListOptions
 		return newErrWatcher(err), nil
 	}
 
+	if !isListWatchRequest(opts) && requiredResourceVersion > 0 {
+		klog.V(1).Infof("New watch requested RV=%d, cache RV=%d, %s (%s)", requiredResourceVersion, c.watchCache.resourceVersion, c.groupResource, identifier)
+	}
+
 	c.setInitialEventsEndBookmarkIfRequested(cacheInterval, opts, c.watchCache.resourceVersion)
 
 	// Presize the waitInitEventTemporary slice for streaming list requests
