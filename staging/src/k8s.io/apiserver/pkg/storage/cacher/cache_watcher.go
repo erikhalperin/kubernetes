@@ -108,6 +108,7 @@ func newCacheWatcher(
 	allowWatchBookmarks bool,
 	groupResource schema.GroupResource,
 	identifier string,
+	isListWatchRequest bool,
 ) *cacheWatcher {
 	cw := &cacheWatcher{
 		input:               make(chan *watchCacheEvent, chanSize),
@@ -123,6 +124,7 @@ func newCacheWatcher(
 		identifier:          identifier,
 		initEventBudget:     newEventBudget(maxEventBudgetTime, maxEventTime),
 		initEventTimer:      time.NewTimer(time.Duration(0)),
+		initEventsDone:      !isListWatchRequest,
 	}
 	// Ensure that timer is stopped.
 	if !cw.initEventTimer.Stop() {
@@ -631,10 +633,6 @@ func (c *cacheWatcher) processPendingEvents(ctx context.Context, resourceVersion
 
 			c.initEventTimer.Reset(c.initEventBudget.getTimeout())
 			eventStartTime := time.Now()
-
-			if event.ResourceVersion < resourceVersion {
-				klog.V(1).Infof("Found event RV %d < requested RV %d of %s (%s)", event.ResourceVersion, resourceVersion, c.groupResource, c.identifier)
-			}
 
 			if event.ResourceVersion > resourceVersion || (event.Type == watch.Bookmark && event.ResourceVersion == resourceVersion && !c.wasBookmarkAfterRvSent()) {
 				if !c.sendWatchCacheEvent(event, c.initEventTimer) {
