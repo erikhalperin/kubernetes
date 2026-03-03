@@ -613,8 +613,8 @@ func (c *Cacher) Watch(ctx context.Context, key string, opts storage.ListOptions
 		return newErrWatcher(err), nil
 	}
 
-	if !isListWatchRequest(opts) && requiredResourceVersion > 0 {
-		klog.V(1).Infof("New watch requested RV=%d, cache RV=%d, %s (%s)", requiredResourceVersion, c.watchCache.resourceVersion, c.groupResource, identifier)
+	if !isListWatchRequest(opts) && requiredResourceVersion > 0 && requiredResourceVersion < c.watchCache.resourceVersion {
+		klog.V(1).Infof("Requested RV %d is lower than cache RV %d for %s (%s)", requiredResourceVersion, c.watchCache.resourceVersion, c.groupResource, identifier)
 	}
 
 	c.setInitialEventsEndBookmarkIfRequested(cacheInterval, opts, c.watchCache.resourceVersion)
