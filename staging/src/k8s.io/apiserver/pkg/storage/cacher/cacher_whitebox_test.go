@@ -3547,6 +3547,123 @@ func TestRetryAfterForUnreadyCache(t *testing.T) {
 	}
 }
 
+type longTimeBudget struct{}
+
+func (f *longTimeBudget) takeAvailable() time.Duration {
+	return 30 * time.Second
+}
+
+func (f *longTimeBudget) returnUnused(_ time.Duration) {}
+
+func TestWatcherNotGoingBackInTimeWithDispatchBacklog(t *testing.T) {
+	backingStorage := &dummyStorage{}
+	cacher, v, err := newTestCacher(backingStorage)
+	if err != nil {
+		t.Fatalf("Couldn't create cacher: %v", err)
+	}
+	defer cacher.Stop()
+
+	if !utilfeature.DefaultFeatureGate.Enabled(features.ResilientWatchCacheInitialization) {
+		if err := cacher.ready.wait(context.Background()); err != nil {
+			t.Fatalf("unexpected error waiting for the cache to be ready")
+		}
+	}
+
+	cacher.dispatchTimeoutBudget = &longTimeBudget{}
+
+	makePod := func(i int) *examplev1.Pod {
+		return &examplev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:            fmt.Sprintf("pod-%d", 1000+i),
+				Namespace:       "ns",
+				ResourceVersion: fmt.Sprintf("%d", 1000+i),
+			},
+		}
+	}
+
+	if err := cacher.watchCache.Add(makePod(0)); err != nil {
+		t.Fatalf("error adding initial pod: %v", err)
+	}
+
+	// Starting at RV 1000
+
+	totalPods := 50
+
+	// Start a watch, that we won't read from, and then add 50 pods, causing the dispatcher to
+	// get backed up, specifically the c.incoming channel
+	w1, err := cacher.Watch(context.TODO(), "pods/ns", storage.ListOptions{
+		ResourceVersion: "999",
+		Predicate:       storage.Everything,
+	})
+
+	if err != nil {
+		t.Fatalf("Failed to create blocking watch: %v", err)
+	}
+	defer w1.Stop()
+
+	for i := 1; i < totalPods; i++ {
+		if err := cacher.watchCache.Add(makePod(i)); err != nil {
+			t.Fatalf("error adding pod %d: %v", i, err)
+		}
+	}
+
+	reconnectRV := "1025"
+	w2, err := cacher.Watch(context.TODO(), "pods/ns", storage.ListOptions{
+		ResourceVersion: reconnectRV,
+		Predicate:       storage.Everything,
+	})
+	if err != nil {
+		t.Fatalf("Failed to create reconnect watch: %v", err)
+	}
+	defer w2.Stop()
+
+	// Wait 1 second to allow buffers to fill
+	time.Sleep(1 * time.Second)
+
+	// Drain w1 to unblock dispatch
+	go func() {
+		for range w1.ResultChan() {
+		}
+	}()
+
+	requestedRV, _ := v.ParseResourceVersion(reconnectRV)
+	currentRV := uint64(0)
+	eventsReceived := 0
+	shouldContinue := true
+	for shouldContinue {
+		select {
+		case event, ok := <-w2.ResultChan():
+			if !ok {
+				shouldContinue = false
+				break
+			}
+			if event.Type == watch.Bookmark {
+				continue
+			}
+			rv, err := v.ParseResourceVersion(event.Object.(metaRuntimeInterface).GetResourceVersion())
+			if err != nil {
+				t.Fatalf("unexpected parsing error: %v", err)
+			}
+			if rv <= requestedRV {
+				t.Errorf("received event RV %d <= requested RV %d", rv, requestedRV)
+			}
+			if rv < currentRV {
+				t.Errorf("watcher going back in time: got RV %d after RV %d", rv, currentRV)
+			}
+			currentRV = rv
+
+			eventsReceived++
+		case <-time.After(3 * time.Second):
+			shouldContinue = false
+			w2.Stop()
+		}
+	}
+	// 1026 - 1049, inclusive)
+	if eventsReceived != 24 {
+		t.Errorf("expected to receive 24 events, received %d", eventsReceived)
+	}
+}
+
 func TestPendingEventsDeliveredInOrder(t *testing.T) {
 	featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.WatchList, true)
 	forceRequestWatchProgressSupport(t)
@@ -3565,7 +3682,8 @@ func TestPendingEventsDeliveredInOrder(t *testing.T) {
 		}
 	}
 
-	// Add initial pods right to the backing storage of the watcher
+	// Add initial pods right to the backing storage of the watcher, so that ADD events
+	// aren't sent to c.incoming
 	backingStorage := &dummyStorage{}
 	backingStorage.getListFn = func(_ context.Context, _ string, _ storage.ListOptions, listObj runtime.Object) error {
 		podList := listObj.(*example.PodList)
