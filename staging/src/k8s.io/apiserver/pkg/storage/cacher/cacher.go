@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"os"
 	"reflect"
 	"strings"
 	"sync"
@@ -55,8 +56,9 @@ import (
 )
 
 var (
-	emptyFunc             = func(bool) {}
-	coreNamespaceResource = schema.GroupResource{Group: "", Resource: "namespaces"}
+	emptyFunc                  = func(bool) {}
+	coreNamespaceResource      = schema.GroupResource{Group: "", Resource: "namespaces"}
+	pendingEventsBufferEnabled = os.Getenv("KUBE_API_SERVER_PENDING_EVENTS_BUFFER_ENABLED") == "true"
 )
 
 const (
@@ -582,7 +584,7 @@ func (c *Cacher) Watch(ctx context.Context, key string, opts storage.ListOptions
 		pred.AllowWatchBookmarks,
 		c.groupResource,
 		identifier,
-		isListWatchRequest(opts),
+		isListWatchRequest(opts) && pendingEventsBufferEnabled,
 	)
 
 	// note that c.waitUntilWatchCacheFreshAndForceAllEvents must be called without
