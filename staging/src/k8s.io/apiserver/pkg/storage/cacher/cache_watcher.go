@@ -606,6 +606,10 @@ func (c *cacheWatcher) process(ctx context.Context, resourceVersion uint64) {
 
 // processPendingEvents processes all events that queued up while processing init events
 func (c *cacheWatcher) processPendingEvents(ctx context.Context, resourceVersion uint64) {
+	if !pendingEventsBufferEnabled {
+		return
+	}
+
 	for {
 		// With the lock, copy pendingEventsBuffer to a temporary slice. Then release the lock
 		// and drain from the temporary slice without holding the lock, so dispatchEvents can

@@ -619,7 +619,7 @@ func (c *Cacher) Watch(ctx context.Context, key string, opts storage.ListOptions
 	c.setInitialEventsEndBookmarkIfRequested(cacheInterval, opts, c.watchCache.resourceVersion)
 
 	// Presize the waitInitEventTemporary slice for streaming list requests
-	if isListWatchRequest(opts) {
+	if isListWatchRequest(opts) && pendingEventsBufferEnabled {
 		initEventCount := cacheInterval.buffer.endIndex
 		// The slice is of pointers, each pointer is 8 bytes, so the starting max size is 80KB
 		bufferSize := min(10000, initEventCount/4)
