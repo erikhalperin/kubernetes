@@ -965,7 +965,11 @@ func (c *Cacher) dispatchEvent(event *watchCacheEvent) {
 	// we will also need to modify the watchEncoder encoder
 	if event.Type == watch.Bookmark {
 		for _, watcher := range c.watchersBuffer {
-			watcher.nonblockingAdd(event)
+			if !watcher.initEventsDone {
+				watcher.bufferPendingEvent(event)
+			} else {
+				watcher.nonblockingAdd(event)
+			}
 		}
 	} else {
 		// Set up caching of object serializations only for dispatching this event.
