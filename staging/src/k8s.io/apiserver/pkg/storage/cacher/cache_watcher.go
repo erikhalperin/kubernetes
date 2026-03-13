@@ -494,6 +494,12 @@ func (c *cacheWatcher) processInterval(ctx context.Context, cacheInterval *watch
 		resourceVersion = cacheInterval.resourceVersion
 	}
 
+	// When the timer is nil, sending of the events can't time out
+	var initEventTimer *time.Timer
+	if pendingEventsBufferEnabled {
+		initEventTimer = c.initEventTimer
+	}
+
 	initEventCount := 0
 	for {
 		event, err := cacheInterval.Next()
@@ -519,15 +525,21 @@ func (c *cacheWatcher) processInterval(ctx context.Context, cacheInterval *watch
 			break
 		}
 
-		c.initEventTimer.Reset(c.initEventBudget.getTimeout())
+		if initEventTimer != nil {
+			initEventTimer.Reset(c.initEventBudget.getTimeout())
+		}
+
 		eventStartTime := time.Now()
-		if !c.sendWatchCacheEvent(event, c.initEventTimer) {
+		if !c.sendWatchCacheEvent(event, initEventTimer) {
 			return
 		}
-		if !c.initEventTimer.Stop() {
-			<-c.initEventTimer.C
+
+		if initEventTimer != nil {
+			if !initEventTimer.Stop() {
+				<-initEventTimer.C
+			}
+			c.initEventBudget.updateBudget(time.Since(eventStartTime))
 		}
-		c.initEventBudget.updateBudget(time.Since(eventStartTime))
 
 		// With some events already sent, update resourceVersion so that
 		// events that were buffered and not yet processed won't be delivered
@@ -554,12 +566,16 @@ func (c *cacheWatcher) processInterval(ctx context.Context, cacheInterval *watch
 
 	// send bookmark after sending all events in cacheInterval for watchlist request
 	if cacheInterval.initialEventsEndBookmark != nil {
-		c.initEventTimer.Reset(c.initEventBudget.getTimeout())
-		if !c.sendWatchCacheEvent(cacheInterval.initialEventsEndBookmark, c.initEventTimer) {
+		if initEventTimer != nil {
+			initEventTimer.Reset(c.initEventBudget.getTimeout())
+		}
+		if !c.sendWatchCacheEvent(cacheInterval.initialEventsEndBookmark, initEventTimer) {
 			return
 		}
-		if !c.initEventTimer.Stop() {
-			<-c.initEventTimer.C
+		if initEventTimer != nil {
+			if !initEventTimer.Stop() {
+				<-initEventTimer.C
+			}
 		}
 	}
 	c.process(ctx, resourceVersion)
