@@ -108,7 +108,7 @@ func newCacheWatcher(
 	allowWatchBookmarks bool,
 	groupResource schema.GroupResource,
 	identifier string,
-	isListWatchRequest bool,
+	enablePendingEventsBuffer bool,
 ) *cacheWatcher {
 	cw := &cacheWatcher{
 		input:               make(chan *watchCacheEvent, chanSize),
@@ -124,7 +124,7 @@ func newCacheWatcher(
 		identifier:          identifier,
 		initEventBudget:     newEventBudget(maxEventBudgetTime, maxEventTime),
 		initEventTimer:      time.NewTimer(time.Duration(0)),
-		initEventsDone:      !isListWatchRequest,
+		initEventsDone:      !enablePendingEventsBuffer,
 	}
 	// Ensure that timer is stopped.
 	if !cw.initEventTimer.Stop() {
