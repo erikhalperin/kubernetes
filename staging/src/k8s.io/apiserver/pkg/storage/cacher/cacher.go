@@ -584,7 +584,7 @@ func (c *Cacher) Watch(ctx context.Context, key string, opts storage.ListOptions
 		pred.AllowWatchBookmarks,
 		c.groupResource,
 		identifier,
-		isListWatchRequest(opts) && pendingEventsBufferEnabled,
+		pendingEventsBufferEnabled,
 	)
 
 	// note that c.waitUntilWatchCacheFreshAndForceAllEvents must be called without
@@ -619,7 +619,7 @@ func (c *Cacher) Watch(ctx context.Context, key string, opts storage.ListOptions
 	c.setInitialEventsEndBookmarkIfRequested(cacheInterval, opts, c.watchCache.resourceVersion)
 
 	// Presize the pendingEventsBuffer slice for streaming list requests
-	if isListWatchRequest(opts) && pendingEventsBufferEnabled {
+	if pendingEventsBufferEnabled {
 		initEventCount := cacheInterval.buffer.endIndex
 		// The slice is of pointers, each pointer is 8 bytes, so the max starting size is 80KB
 		bufferSize := min(10000, initEventCount/4)
