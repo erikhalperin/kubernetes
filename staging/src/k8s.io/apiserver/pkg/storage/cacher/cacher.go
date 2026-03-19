@@ -626,7 +626,7 @@ func (c *Cacher) Watch(ctx context.Context, key string, opts storage.ListOptions
 		// For non-streaming list watches, there are no init events, but the watcher will be sent events in between
 		// the requested RV and the api server's RV before getting live dispatched events. The count of these
 		// events is (cacheInterval.endIndex - cacheInterval.startIndex), which is otherwise 0
-		// Therefore we can add the two values together since on of them will always be 0 and the other will be correct
+		// Therefore we can add the two values together since one of them will always be 0 and the other will be correct
 		initEventCount := cacheInterval.buffer.endIndex + (cacheInterval.endIndex - cacheInterval.startIndex)
 		// The slice is of pointers, each pointer is 8 bytes, so the max starting size is 80KB
 		bufferSize := min(10000, initEventCount/4)
@@ -973,6 +973,9 @@ func (c *Cacher) dispatchEvent(event *watchCacheEvent) {
 	if event.Type == watch.Bookmark {
 		for _, watcher := range c.watchersBuffer {
 			if !watcher.initEventsDone {
+				// If init events finish in between checking initEventsDone and
+				// buffering the event, we will lose it, but we don't care because
+				// it's a bookmarks
 				watcher.bufferPendingEvent(event)
 			} else {
 				watcher.nonblockingAdd(event)
