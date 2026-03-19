@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"os"
 	"reflect"
 	"strings"
 	"sync"
@@ -55,8 +56,9 @@ import (
 )
 
 var (
-	emptyFunc             = func(bool) {}
-	coreNamespaceResource = schema.GroupResource{Group: "", Resource: "namespaces"}
+	emptyFunc                  = func(bool) {}
+	coreNamespaceResource      = schema.GroupResource{Group: "", Resource: "namespaces"}
+	pendingEventsBufferEnabled = os.Getenv("KUBE_API_SERVER_PENDING_EVENTS_BUFFER_ENABLED") == "true"
 )
 
 const (
@@ -582,6 +584,7 @@ func (c *Cacher) Watch(ctx context.Context, key string, opts storage.ListOptions
 		pred.AllowWatchBookmarks,
 		c.groupResource,
 		identifier,
+		pendingEventsBufferEnabled,
 	)
 
 	// note that c.waitUntilWatchCacheFreshAndForceAllEvents must be called without
@@ -614,6 +617,21 @@ func (c *Cacher) Watch(ctx context.Context, key string, opts storage.ListOptions
 	}
 
 	c.setInitialEventsEndBookmarkIfRequested(cacheInterval, opts, c.watchCache.resourceVersion)
+
+	// Presize the pendingEventsBuffer slice because if initialization takes a long time and we expect lots of
+	// pending events, it's expensive to continually grow the slice
+	if pendingEventsBufferEnabled {
+		// For streaming list watches, init events are pulled from the underlying store so cacheInterval.buffer.endIndex
+		// is the correct count of init events, otherwise it's 0
+		// For non-streaming list watches, there are no init events, but the watcher will be sent events in between
+		// the requested RV and the api server's RV before getting live dispatched events. The count of these
+		// events is (cacheInterval.endIndex - cacheInterval.startIndex), which is otherwise 0
+		// Therefore we can add the two values together since one of them will always be 0 and the other will be correct
+		initEventCount := cacheInterval.buffer.endIndex + (cacheInterval.endIndex - cacheInterval.startIndex)
+		// The slice is of pointers, each pointer is 8 bytes, so the max starting size is 80KB
+		bufferSize := min(10000, initEventCount/4)
+		watcher.pendingEventsBuffer = make([]*watchCacheEvent, 0, bufferSize)
+	}
 
 	addedWatcher := false
 	func() {
@@ -954,7 +972,14 @@ func (c *Cacher) dispatchEvent(event *watchCacheEvent) {
 	// we will also need to modify the watchEncoder encoder
 	if event.Type == watch.Bookmark {
 		for _, watcher := range c.watchersBuffer {
-			watcher.nonblockingAdd(event)
+			if !watcher.initEventsDone {
+				// If init events finish in between checking initEventsDone and
+				// buffering the event, we will lose it, but we don't care because
+				// it's a bookmarks
+				watcher.bufferPendingEvent(event)
+			} else {
+				watcher.nonblockingAdd(event)
+			}
 		}
 	} else {
 		// Set up caching of object serializations only for dispatching this event.
@@ -976,7 +1001,15 @@ func (c *Cacher) dispatchEvent(event *watchCacheEvent) {
 
 		c.blockedWatchers = c.blockedWatchers[:0]
 		for _, watcher := range c.watchersBuffer {
-			if !watcher.nonblockingAdd(event) {
+			if !watcher.initEventsDone {
+				if !watcher.bufferPendingEvent(event) {
+					// If init events could finish in between checking it and
+					// buffer the pending event
+					if !watcher.nonblockingAdd(event) {
+						c.blockedWatchers = append(c.blockedWatchers, watcher)
+					}
+				}
+			} else if !watcher.nonblockingAdd(event) {
 				c.blockedWatchers = append(c.blockedWatchers, watcher)
 			}
 		}

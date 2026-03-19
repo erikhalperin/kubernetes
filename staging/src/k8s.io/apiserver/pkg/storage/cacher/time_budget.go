@@ -24,8 +24,10 @@ import (
 )
 
 const (
-	refreshPerSecond = 50 * time.Millisecond
-	maxBudget        = 100 * time.Millisecond
+	refreshPerSecond   = 50 * time.Millisecond
+	maxBudget          = 100 * time.Millisecond
+	maxEventTime       = 100 * time.Millisecond
+	maxEventBudgetTime = 30 * time.Second
 )
 
 // timeBudget implements a budget of time that you can use and is
@@ -98,5 +100,42 @@ func (t *timeBudgetImpl) returnUnused(unused time.Duration) {
 	// takeAvailable() will take into account the elapsed time
 	if t.budget = t.budget + unused; t.budget > t.maxBudget {
 		t.budget = t.maxBudget
+	}
+}
+
+// eventBudget implements a budget of time designed to track whether a client
+// is keeping up with an expected throughput. Each event that takes longer than
+// expected depletes the budget while events faster than expected restore
+// the budget
+type eventBudget struct {
+	budget           time.Duration
+	maxBudget        time.Duration
+	expectedPerEvent time.Duration
+}
+
+func newEventBudget(maxBudget, expectedPerEvent time.Duration) *eventBudget {
+	return &eventBudget{
+		budget:           maxBudget,
+		maxBudget:        maxBudget,
+		expectedPerEvent: expectedPerEvent,
+	}
+}
+
+// getTimeout returns how long the next event is allowed to take
+// This is the expected duration plus any accumulated budget
+func (b *eventBudget) getTimeout() time.Duration {
+	return b.expectedPerEvent + b.budget
+}
+
+// reset restores the budget to its maximum value
+func (b *eventBudget) reset() {
+	b.budget = b.maxBudget
+}
+
+// updateBudget updates the budget based on how long the event took
+func (b *eventBudget) updateBudget(actual time.Duration) {
+	b.budget -= actual - b.expectedPerEvent
+	if b.budget > b.maxBudget {
+		b.budget = b.maxBudget
 	}
 }

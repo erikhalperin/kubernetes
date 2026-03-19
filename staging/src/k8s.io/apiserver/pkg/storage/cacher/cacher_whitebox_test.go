@@ -2748,6 +2748,7 @@ func TestForgetWatcher(t *testing.T) {
 		true,
 		schema.GroupResource{Resource: "pods"},
 		"1",
+		false,
 	)
 	forgetWatcherFn = forgetWatcher(cacher, w, 0, namespacedName{}, "", false)
 	addWatcher := func(w *cacheWatcher) {
@@ -3543,5 +3544,235 @@ func TestRetryAfterForUnreadyCache(t *testing.T) {
 	}
 	if statusError.Status().Details.RetryAfterSeconds != 2 {
 		t.Fatalf("Unexpected retry after: %v", statusError.Status().Details.RetryAfterSeconds)
+	}
+}
+
+type longTimeBudget struct{}
+
+func (f *longTimeBudget) takeAvailable() time.Duration {
+	return 30 * time.Second
+}
+
+func (f *longTimeBudget) returnUnused(_ time.Duration) {}
+
+func TestWatcherNotGoingBackInTimeWithDispatchBacklog(t *testing.T) {
+	backingStorage := &dummyStorage{}
+	cacher, v, err := newTestCacher(backingStorage)
+	if err != nil {
+		t.Fatalf("Couldn't create cacher: %v", err)
+	}
+	defer cacher.Stop()
+
+	if !utilfeature.DefaultFeatureGate.Enabled(features.ResilientWatchCacheInitialization) {
+		if err := cacher.ready.wait(context.Background()); err != nil {
+			t.Fatalf("unexpected error waiting for the cache to be ready")
+		}
+	}
+
+	cacher.dispatchTimeoutBudget = &longTimeBudget{}
+
+	makePod := func(i int) *examplev1.Pod {
+		return &examplev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:            fmt.Sprintf("pod-%d", 1000+i),
+				Namespace:       "ns",
+				ResourceVersion: fmt.Sprintf("%d", 1000+i),
+			},
+		}
+	}
+
+	if err := cacher.watchCache.Add(makePod(0)); err != nil {
+		t.Fatalf("error adding initial pod: %v", err)
+	}
+
+	// Starting at RV 1000
+
+	totalPods := 50
+
+	// Start a watch, that we won't read from, and then add 50 pods, causing the dispatcher to
+	// get backed up, specifically the c.incoming channel
+	w1, err := cacher.Watch(context.TODO(), "pods/ns", storage.ListOptions{
+		ResourceVersion: "999",
+		Predicate:       storage.Everything,
+	})
+
+	if err != nil {
+		t.Fatalf("Failed to create blocking watch: %v", err)
+	}
+	defer w1.Stop()
+
+	for i := 1; i < totalPods; i++ {
+		if err := cacher.watchCache.Add(makePod(i)); err != nil {
+			t.Fatalf("error adding pod %d: %v", i, err)
+		}
+	}
+
+	reconnectRV := "1025"
+	w2, err := cacher.Watch(context.TODO(), "pods/ns", storage.ListOptions{
+		ResourceVersion: reconnectRV,
+		Predicate:       storage.Everything,
+	})
+	if err != nil {
+		t.Fatalf("Failed to create reconnect watch: %v", err)
+	}
+	defer w2.Stop()
+
+	// Wait 1 second to allow buffers to fill
+	time.Sleep(1 * time.Second)
+
+	// Drain w1 to unblock dispatch
+	go func() {
+		for range w1.ResultChan() {
+		}
+	}()
+
+	requestedRV, _ := v.ParseResourceVersion(reconnectRV)
+	currentRV := uint64(0)
+	eventsReceived := 0
+	shouldContinue := true
+	for shouldContinue {
+		select {
+		case event, ok := <-w2.ResultChan():
+			if !ok {
+				shouldContinue = false
+				break
+			}
+			if event.Type == watch.Bookmark {
+				continue
+			}
+			rv, err := v.ParseResourceVersion(event.Object.(metaRuntimeInterface).GetResourceVersion())
+			if err != nil {
+				t.Fatalf("unexpected parsing error: %v", err)
+			}
+			if rv <= requestedRV {
+				t.Errorf("received event RV %d <= requested RV %d", rv, requestedRV)
+			}
+			if rv < currentRV {
+				t.Errorf("watcher going back in time: got RV %d after RV %d", rv, currentRV)
+			}
+			currentRV = rv
+
+			eventsReceived++
+		case <-time.After(3 * time.Second):
+			shouldContinue = false
+			w2.Stop()
+		}
+	}
+	// 1026 - 1049, inclusive)
+	if eventsReceived != 24 {
+		t.Errorf("expected to receive 24 events, received %d", eventsReceived)
+	}
+}
+
+func TestPendingEventsDeliveredInOrder(t *testing.T) {
+	featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.WatchList, true)
+	forceRequestWatchProgressSupport(t)
+
+	totalInitPods := 10
+	additionalPods := 7
+	initListRV := fmt.Sprintf("%d", 1000+totalInitPods-1)
+
+	makePod := func(i int) example.Pod {
+		return example.Pod{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:            fmt.Sprintf("pod-%d", 1000+i),
+				Namespace:       "ns",
+				ResourceVersion: fmt.Sprintf("%d", 1000+i),
+			},
+		}
+	}
+
+	// Add initial pods right to the backing storage of the watcher, so that ADD events
+	// aren't sent to c.incoming
+	backingStorage := &dummyStorage{}
+	backingStorage.getListFn = func(_ context.Context, _ string, _ storage.ListOptions, listObj runtime.Object) error {
+		podList := listObj.(*example.PodList)
+		podList.ListMeta = metav1.ListMeta{ResourceVersion: initListRV}
+		for i := 0; i < totalInitPods; i++ {
+			podList.Items = append(podList.Items, makePod(i))
+		}
+		return nil
+	}
+
+	cacher, v, err := newTestCacher(backingStorage)
+	if err != nil {
+		t.Fatalf("Couldn't create cacher: %v", err)
+	}
+	defer cacher.Stop()
+
+	if !utilfeature.DefaultFeatureGate.Enabled(features.ResilientWatchCacheInitialization) {
+		if err := cacher.ready.wait(context.Background()); err != nil {
+			t.Fatalf("unexpected error waiting for the cache to be ready")
+		}
+	}
+
+	cacher.dispatchTimeoutBudget = &fakeTimeBudget{}
+
+	pred := storage.Everything
+	pred.AllowWatchBookmarks = true
+	w, err := cacher.Watch(context.TODO(), "pods/ns", storage.ListOptions{
+		ResourceVersion:   "0",
+		Predicate:         pred,
+		SendInitialEvents: pointer.Bool(true),
+	})
+	if err != nil {
+		t.Fatalf("Failed to create watch: %v", err)
+	}
+	defer w.Stop()
+
+	for i := totalInitPods; i < totalInitPods+additionalPods; i++ {
+		pod := makePod(i)
+		if err := cacher.watchCache.Add(&pod); err != nil {
+			t.Fatalf("error adding pod: %v", err)
+		}
+	}
+
+	cw := w.(*cacheWatcher)
+	var pendingLen int
+	// Events are added to the watcher async, wait for the pending buffer to fill
+	if err := wait.PollUntilContextTimeout(context.Background(), 10*time.Millisecond, time.Second, true, func(_ context.Context) (bool, error) {
+		cw.pendingEventsBufferMutex.Lock()
+		pendingLen = len(cw.pendingEventsBuffer)
+		cw.pendingEventsBufferMutex.Unlock()
+		return pendingLen == additionalPods, nil
+	}); err != nil {
+		t.Fatalf("expected %d pending events, got %d", additionalPods, pendingLen)
+	}
+
+	currentRV := uint64(0)
+	eventsReceived := 0
+	timeout := time.After(10 * time.Second)
+	for eventsReceived < totalInitPods+additionalPods {
+		select {
+		case event, ok := <-w.ResultChan():
+			if !ok {
+				t.Fatalf("watch closed after %d events, expected %d", eventsReceived, totalInitPods+additionalPods)
+			}
+			if event.Type == watch.Error {
+				t.Fatalf("unexpected error event: %v", event.Object)
+			}
+			if event.Type == watch.Bookmark {
+				continue
+			}
+			rv, err := v.ParseResourceVersion(event.Object.(metaRuntimeInterface).GetResourceVersion())
+			if err != nil {
+				t.Fatalf("unexpected parsing error: %v", err)
+			}
+			if rv < currentRV {
+				t.Fatalf("events out of order: got rv %d after rv %d (after %d events)", rv, currentRV, eventsReceived)
+			}
+			currentRV = rv
+			eventsReceived++
+		case <-timeout:
+			t.Fatalf("timed out after receiving %d events, expected %d", eventsReceived, totalInitPods+additionalPods)
+		}
+	}
+
+	if eventsReceived != totalInitPods+additionalPods {
+		t.Fatalf("expected %d events, got %d", totalInitPods+additionalPods, eventsReceived)
+	}
+	expectedLastRV := uint64(1000 + totalInitPods + additionalPods - 1)
+	if currentRV != expectedLastRV {
+		t.Fatalf("expected final resource version %d, got %d", expectedLastRV, currentRV)
 	}
 }
