@@ -618,12 +618,16 @@ func (c *Cacher) Watch(ctx context.Context, key string, opts storage.ListOptions
 
 	c.setInitialEventsEndBookmarkIfRequested(cacheInterval, opts, c.watchCache.resourceVersion)
 
-	// Presize the pendingEventsBuffer slice for streaming list requests
+	// Presize the pendingEventsBuffer slice because if initialization takes a long time and we expect lots of
+	// pending events, it's expensive to continually grow the slice
 	if pendingEventsBufferEnabled {
-		// For streaming lists cacheInterval.buffer.endIndex is the count of init events, while
-		// cacheInterval.startIndex and endIndex are 0. For non-streaming lists, vice versa.
+		// For streaming list watches, init events are pulled from the underlying store and so cacheInterval.buffer.endIndex
+		// is the correct count of init events, otherwise it's 0
+		// For non-streaming list watches, there are no init events, but the watcher will be sent events in between
+		// the requested RV and the api server's RV before getting live dispatched events. The count of these
+		// events is (cacheInterval.endIndex - cacheInterval.startIndex), which is otherwise 0
+		// Therefore we can add the two values together since on of them will always be 0 and the other will be correct
 		initEventCount := cacheInterval.buffer.endIndex + (cacheInterval.endIndex - cacheInterval.startIndex)
-		klog.V(1).Infof("cacheInterval.buffer: %d, cacheInterval.index: %d, is ListWatch: %t", initEventCount, cacheInterval.endIndex-cacheInterval.startIndex, isListWatchRequest(opts))
 		// The slice is of pointers, each pointer is 8 bytes, so the max starting size is 80KB
 		bufferSize := min(10000, initEventCount/4)
 		watcher.pendingEventsBuffer = make([]*watchCacheEvent, 0, bufferSize)
