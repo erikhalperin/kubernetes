@@ -621,7 +621,7 @@ func (c *Cacher) Watch(ctx context.Context, key string, opts storage.ListOptions
 	// Presize the pendingEventsBuffer slice because if initialization takes a long time and we expect lots of
 	// pending events, it's expensive to continually grow the slice
 	if pendingEventsBufferEnabled {
-		// For streaming list watches, init events are pulled from the underlying store and so cacheInterval.buffer.endIndex
+		// For streaming list watches, init events are pulled from the underlying store so cacheInterval.buffer.endIndex
 		// is the correct count of init events, otherwise it's 0
 		// For non-streaming list watches, there are no init events, but the watcher will be sent events in between
 		// the requested RV and the api server's RV before getting live dispatched events. The count of these
